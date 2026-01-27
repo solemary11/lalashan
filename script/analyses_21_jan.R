@@ -936,32 +936,34 @@ hypo3b_df <- hypo3_df %>%
 hypo3b_df <- left_join(species_recruitment, hypo3b_df, by = "species")
 
 #model
-mod_h3b_2 <- lm(
-   total_recruits ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di, data = hypo3b_df)
+mod_h3b_2 <- glm(
+   total_recruits ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di, family = "poisson",data = hypo3b_df)
 summary(mod_h3b_2)
 
-# Call:
-#    lm(formula = total_recruits ~ SLA_CV + LA_CV + LDMC_CV + LT_CV +
-#          Chl_CV + Di, data = hypo3b_df)
-#
-# Residuals:
-#    Min      1Q  Median      3Q     Max
-# -16.143  -9.835  -3.023   1.979  67.256
-#
-# Coefficients:
-#    Estimate Std. Error t value Pr(>|t|)
-# (Intercept)   20.952     24.247   0.864    0.396
-# SLA_CV      -180.905    214.284  -0.844    0.407
-# LA_CV          6.831    107.795   0.063    0.950
-# LDMC_CV      244.356    279.989   0.873    0.391
-# LT_CV         36.635    228.286   0.160    0.874
-# Chl_CV       129.563    198.868   0.652    0.521
-# Di           -37.063     32.273  -1.148    0.262
-#
-# Residual standard error: 19.38 on 25 degrees of freedom
-# (5 observations deleted due to missingness)
-# Multiple R-squared:  0.1345,	Adjusted R-squared:  -0.07318
-# F-statistic: 0.6477 on 6 and 25 DF,  p-value: 0.6915
+#Call:
+#   glm(formula = total_recruits ~ SLA_CV + LA_CV + LDMC_CV + LT_CV +
+#          Chl_CV + Di, family = "poisson", data = hypo3b_df)
+
+#Coefficients:
+#   Estimate Std. Error z value Pr(>|z|)
+#(Intercept)   4.2896     0.4159  10.314  < 2e-16 ***
+#   SLA_CV      -28.2653     4.8180  -5.867 4.45e-09 ***
+#   LA_CV        -0.6410     1.8654  -0.344 0.731116
+#LDMC_CV      34.9161     5.9284   5.890 3.87e-09 ***
+#   LT_CV         4.3040     3.9178   1.099 0.271950
+#Chl_CV       11.5567     3.0252   3.820 0.000133 ***
+#   Di           -4.9418     0.6436  -7.679 1.61e-14 ***
+#   ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#(Dispersion parameter for poisson family taken to be 1)
+
+#Null deviance: 592.64  on 31  degrees of freedom
+#Residual deviance: 424.48  on 25  degrees of freedom
+#(5 observations deleted due to missingness)
+#AIC: 546.73
+
+#Number of Fisher Scoring iterations: 6
 
 #####SEM part
 #4. # and we expected that species distinctiveness and trait variation are mediating factors
