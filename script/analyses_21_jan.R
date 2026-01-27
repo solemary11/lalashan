@@ -2,30 +2,19 @@
 #overarching aim: investigate recruitment and growth patterns in a Montane cloud forest of Taiwan
 # in relation to species assemblages (BPR, sr), species functional distinctiveness and niche breadth
 
-#1. hypothesis: we expect a positive relationship between sr and
-   #a) growth at: 1. individual level, 2. subplot level
-   #b) recruitment at a plot level
+#hypotheses:
+#H1A (growth in relation to sr and environmental covariates (light, ph, windwardness) at individual and subplot level)
 
-#1. method:
-    #a)linear mixed model relating DBH_growth at individual level with sr + light + soil resources + windwardness as covariates + species and subplot as random effect
-    #b)linear model relating DBH_growth at subplot level with sr + light + soil resources + windwardness as covariates
-    #c)glm with poisson family relating total recruitment per subplot to sr + light + soil resources + windwardness as covariates
+#H1B (number or recruitment by species by subplot in relation to sr and environmental covariates)
 
-#2. we expect a positive relationships between species functional distinctiveness and trait variation
-#and light and soil resources availability
+#H2A (relationships between species functional distinctiveness and trait variation and light and soil resources availability)
 
-#2. method:
-    #a)linear mixed model relating species distinctiveness at individual level with sr + light + soil resources + windwardness as covariates + subplot as random effect
-    #b)single linear mixed model relating species traits variation at individual level with sr + light + soil resources + windwardness as covariates + subplot as random effect
+#H2B (relationships between species variation in traits (separatedly, i also try pca but no results) and environmental covariates
 
-#3. hypothesis: we expect a positive relationship between growth and recruitment with
-#mean species distinctiveness and trait variations or plasticity at the species level
-# and we expected that species distinctiveness and trait variation are mediating factors
-#of how tree species richness affects tree growth and recruitment (with environmental covariates as above)
+#H3A ( relationship between growth with species trait variability and species distinctiveness at the species level)
 
-#3. method
-    #a)1 SEM connecting all components for growth
-    #b)1 SEM connecting all components for recruitment
+#H3B ( relationship between total number of recruits per species with species trait variability and species distinctiveness at the species level)
+
 
 ######LOADING AND CLEANING######
 #########libraries and data
