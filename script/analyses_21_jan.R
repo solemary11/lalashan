@@ -949,9 +949,9 @@ summary(mod_h3b_2)
 #(Intercept)   4.2896     0.4159  10.314  < 2e-16 ***
 #   SLA_CV      -28.2653     4.8180  -5.867 4.45e-09 ***
 #   LA_CV        -0.6410     1.8654  -0.344 0.731116
-#LDMC_CV      34.9161     5.9284   5.890 3.87e-09 ***
+#.  LDMC_CV      34.9161     5.9284   5.890 3.87e-09 ***
 #   LT_CV         4.3040     3.9178   1.099 0.271950
-#Chl_CV       11.5567     3.0252   3.820 0.000133 ***
+#.  Chl_CV       11.5567     3.0252   3.820 0.000133 ***
 #   Di           -4.9418     0.6436  -7.679 1.61e-14 ***
 #   ---
 #   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
@@ -964,6 +964,9 @@ summary(mod_h3b_2)
 #AIC: 546.73
 
 #Number of Fisher Scoring iterations: 6
+
+####careful with overfitting!!
+r2(mod_h3b_2)
 
 #####SEM part
 #4. # and we expected that species distinctiveness and trait variation are mediating factors
