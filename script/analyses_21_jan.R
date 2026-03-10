@@ -92,6 +92,8 @@ metadata <- merge(topo, soil_subp, by = "subplot", all =T)
 metadata <- merge(metadata, soil_analysis, by = "subplot", all = T)
 metadata <- merge(metadata, light, by = "subplot")
 
+growth$BA <- (growth$D_DBH*growth$D_DBH)*0.00007854 #returns BA in squared meters
+
 
 ######DATA PREPARATION######
 
@@ -124,12 +126,51 @@ species_DBH <-growth %>%
    group_by(species) %>%
    summarise(total_D_DBH = sum(D_DBH, na.rm = TRUE))
 
+#BA
+#individual BA as sum keeping the cat info from the biggest branch
+individual_BA <- growth %>%
+   group_by(ind, subplot, species) %>%
+   summarise(
+      BA_growth = sum(BA, na.rm = TRUE),
+      D_cat = D_cat[which.max(DBH_o)],
+      .groups = "drop"
+   )
+
+#DBH increase by species by subplot and by mat or sap
+species_subplot_BA_cat <- individual_BA %>%
+   group_by(subplot, species, D_cat) %>%
+   summarise(BA_growth = sum(BA_growth), .groups = 'drop')
+
+#DBH increase by species by subplot
+species_subplot_BA <- individual_BA %>%
+   group_by(subplot, species) %>%
+   summarise(BA_growth = sum(BA_growth), .groups = 'drop')
+
+#DBH increase by subplot
+subplot_BA <- growth %>%
+   group_by(subplot) %>%
+   summarise(total_D_BA = sum(BA, na.rm = TRUE))
+
+#BA increase by species
+species_BA <-growth %>%
+   group_by(species) %>%
+   summarise(total_D_BA = sum(BA, na.rm = TRUE))
+
 #recruitment
 # Sum recruitment per species across all subplots
+
+#recruitment by species by subplot
+species_subplot_recruitment <- recruit %>%
+   group_by(subplot, species) %>%
+   summarise(total_recruits = n(), .groups = 'drop')
+
+
+#subplot
 subplot_recruitment <- recruit %>%
    group_by(subplot) %>%
    summarise(total_recruits = n(), .groups = 'drop')
 
+#species
 species_recruitment <- recruit %>%
    group_by(species) %>%
    summarise(total_recruits = n(), .groups = 'drop')
@@ -144,6 +185,21 @@ colnames(sr) <- c("sr","subplot")
 
 #add to metadata sr
 metadata <- left_join(metadata, sr, by = "subplot")
+
+#calculate subplot BA to add as covariate to consider structure
+#reload raw data to calculate initial (t0) BA
+DBH <- as.data.frame(read_excel("woody_species_records_retypeonly_Sole.20251219.xlsx", sheet = 1))
+DBH$BA <- (DBH$DBH_o*DBH$DBH_o)*0.00007854 #returns BA in squared meters
+names(DBH)[names(DBH) == "10 x 10"] <- 'subplot'
+
+BA_subplot <-DBH%>%
+   group_by(subplot) %>%
+   summarise(
+      BA = sum(BA, na.rm = TRUE),
+      .groups = "drop"
+   )
+
+metadata$subplot_BA <- BA_subplot$BA
 
 #traits
 
@@ -195,8 +251,20 @@ tree_trait_cv <- tree_trait_cv %>%
 tree_trait_cv <- tree_trait_cv[,-c(9,15)]
 names(tree_trait_cv)[names(tree_trait_cv) == 'species.x'] <- 'species'
 
+###IMPORTANT, remove species taken outside the 25 subplots?
+#table to understand how many individuals by subplot by species
+species_counts_df <- tree_trait_cv %>%
+   group_by(subplot, species) %>%
+   summarize(Count = n())
+
+#remove that plot data
+tree_trait_cv_clean <- tree_trait_cv[!tree_trait_cv$subplot %in% c("(3,8)", "(5,7)", "(7,1)",
+                                                             "(9,0)","(5,0)","(8,1)","(7,0)",
+                                                             "(4,3)","(7,3)","(9,9)","(6,7)"),]
+
+
 #traits, logz traits and cv species average by plot
-tree_trait_species_subplot <- tree_trait_cv %>%
+tree_trait_species_subplot <- tree_trait_cv_clean %>%
    group_by(subplot, species) %>%
    summarise(across(where(is.numeric), mean, na.rm = TRUE)) %>%
    ungroup()
@@ -303,254 +371,576 @@ tree_trait_species_subplot <-tree_trait_species_subplot[,-1]
 #a) growth at:
 #1. individual level
 #individual_DBH, add sr, rel_light and soilPH, windwardness
+individual_DBH$BA_growth <- individual_BA$BA_growth
 hypo1_df <- left_join(individual_DBH, metadata, by = "subplot")
 
 hypo1_df <- hypo1_df %>%
    mutate(
       DBH_log = log1p(DBH_growth),          # log(x + 1) to handle zeros
-      DBH_log = as.numeric(scale(DBH_log)) # scale after log
+      DBH_log = as.numeric(scale(DBH_log)), # scale after log
+      BA_log = log1p(BA_growth),          # log(x + 1) to handle zeros
+      BA_log = as.numeric(scale(BA_log)) # scale after log
+
    )
 
 hypo1_df  <- hypo1_df %>%
    mutate(across(
-      c(DBH_log, DBH_growth, sr, rel_total_light, windwardness, pH),
+      c(sr, rel_total_light, windwardness, pH, subplot_BA),
       ~ as.numeric(scale(.))
    ))
 
-#fit model for saplings
-mod_h1a_sap <- lmer(
-   DBH_log ~ sr + rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo1_df[hypo1_df$D_cat == "sap",])
-
-summary(mod_h1a_sap)
-
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: DBH_log ~ sr + rel_total_light + windwardness + soil_pH + (1 |
-#     species) + (1 | subplot)
-#    Data: hypo1_df[hypo1_df$D_cat == "sap", ]
-#
-# REML criterion at convergence: 7716.4
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -2.3305 -0.6644 -0.2217  0.4693  7.6803
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  subplot  (Intercept) 0.01380  0.1175
-#  species  (Intercept) 0.04389  0.2095
-#  Residual             0.56867  0.7541
-# Number of obs: 3336, groups:  subplot, 100; species, 58
-#
-# Fixed effects:
-#                   Estimate Std. Error         df t value Pr(>|t|)
-# (Intercept)      -0.663688   0.325765 100.526085  -2.037  0.04425 *
-# sr                0.089487   0.029314  74.824893   3.053  0.00314 **
-# rel_total_light   0.003798   0.021088  75.202215   0.180  0.85756
-# windwardness      0.060231   0.028038  77.768963   2.148  0.03481 *
-# soil_pH           0.101268   0.088796  98.116843   1.140  0.25687
-# ---
-# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Correlation of Fixed Effects:
-#             (Intr) sr     rl_tt_ wndwrd
-# sr           0.226
-# rl_ttl_lght  0.148 -0.122
-# windwardnss -0.009 -0.632 -0.145
-# soil_pH     -0.992 -0.225 -0.151  0.017
-
-#fit model for mature
-mod_h1a_mat <- lmer(
-   DBH_growth ~ sr + rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo1_df[hypo1_df$D_cat == "mat",])
-
-summary(mod_h1a_mat)
-
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: DBH_growth ~ sr + rel_total_light + windwardness + soil_pH +
-#     (1 | species) + (1 | subplot)
-#    Data: hypo1_df[hypo1_df$D_cat == "mat", ]
-#
-# REML criterion at convergence: 3217.2
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.6636 -0.5632 -0.2097  0.3333  9.2080
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  subplot  (Intercept) 0.1032   0.3212
-#  species  (Intercept) 0.2988   0.5466
-#  Residual             1.8087   1.3449
-# Number of obs: 913, groups:  subplot, 100; species, 36
-#
-# Fixed effects:
-#                 Estimate Std. Error       df t value Pr(>|t|)
-# (Intercept)     -1.44413    0.99513 89.56975  -1.451   0.1502
-# sr              -0.02233    0.08801 73.76481  -0.254   0.8004
-# rel_total_light  0.10450    0.06321 76.87443   1.653   0.1024
-# windwardness    -0.04912    0.08469 75.46793  -0.580   0.5637
-# soil_pH          0.51879    0.27071 86.50524   1.916   0.0586 .
-# ---
-# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Correlation of Fixed Effects:
-#             (Intr) sr     rl_tt_ wndwrd
-# sr           0.205
-# rl_ttl_lght  0.170 -0.147
-# windwardnss  0.041 -0.590 -0.110
-# soil_pH     -0.991 -0.201 -0.173 -0.026
-
-
-#2. subplot level
-hypo1b_df <- left_join(subplot_DBH, metadata, by = "subplot")
-
-hypo1b_df <- hypo1b_df %>%
-   mutate(
-      total_DBH_log = log1p(total_D_DBH),          # log(x + 1) to handle zeros
-      total_DBH_log = as.numeric(scale(total_DBH_log)) # scale after log
+#plot to visualize growth and variables throughout the subplots
+library(tidyr)
+library(dplyr)
+plot_df <- individual_DBH %>%
+   mutate(subplot = gsub("[()]", "", subplot)) %>%
+   separate(subplot, into = c("x", "y"), sep = ",")
+subplot_summary <- plot_df %>%
+   group_by(x, y) %>%
+   summarize(
+      total_growth = sum(DBH_growth, na.rm = TRUE),
+      avg_growth = mean(DBH_growth, na.rm = TRUE),
+      tree_count = n(), # Optional: to see how many trees are in the subplot
+      .groups = "drop"
    )
 
-hypo1b_df  <- hypo1b_df %>%
-   mutate(across(
-      c(total_DBH_log, total_D_DBH, sr, rel_total_light, windwardness, pH),
-      ~ as.numeric(scale(.))
-   ))
+#plot
+library(ggplot2)
+library(viridis) # For colorblind-friendly scales
 
-#fit model
-mod_h1b <- lm(total_DBH_log ~ sr + rel_total_light + windwardness + soil_pH, data = hypo1b_df)
+d1 <- ggplot(subplot_summary, aes(x = x, y = y, fill = total_growth)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(total_growth, 1)), color = "white") +
+   scale_fill_viridis_c() +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of Aggregate DBH Growth",
+        fill = "Total Growth in cm")+theme(legend.position = "bottom")
 
-summary(mod_h1b)
-# Call:
-#    lm(formula = total_DBH_log ~ sr + rel_total_light + windwardness +
-#          soil_pH, data = hypo1b_df)
-#
-# Residuals:
-#    Min      1Q  Median      3Q     Max
-# -1.6751 -0.2811  0.0497  0.3285  1.2318
-#
-# Coefficients:
-#    Estimate Std. Error t value Pr(>|t|)
-# (Intercept)      0.30976    1.00466   0.308    0.759
-# sr               0.46724    0.08600   5.433 4.27e-07 ***
-#    rel_total_light -0.05811    0.06797  -0.855    0.395
-# windwardness     0.42006    0.08371   5.018 2.43e-06 ***
-#    soil_pH         -0.08621    0.27908  -0.309    0.758
-# ---
-#    Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Residual standard error: 0.6295 on 95 degrees of freedom
-# Multiple R-squared:  0.6197,	Adjusted R-squared:  0.6037
-# F-statistic: 38.71 on 4 and 95 DF,  p-value: < 2.2e-16
+d2 <- ggplot(subplot_summary, aes(x = x, y = y, fill = avg_growth)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(avg_growth, 1)), color = "white") +
+   scale_fill_viridis_c() +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of Aggregate DBH Growth",
+        fill = "Average Growth in cm")+theme(legend.position = "bottom")
 
-plot(mod_h1b)
+#sr
+metadata_plot <- metadata%>%
+   mutate(subplot = gsub("[()]", "", subplot)) %>%
+   separate(subplot, into = c("x", "y"), sep = ",")
+
+s <- ggplot(metadata_plot, aes(x = x, y = y, fill = sr)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(sr, 1)), color = "white") +
+   scale_fill_viridis_c(option = "magma") +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of SR",
+        fill = "number of species") +theme(legend.position = "bottom")
+
+s1 <- ggplot(metadata_plot, aes(x = x, y = y, fill = subplot_BA)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(subplot_BA, 1)), color = "white") +
+   scale_fill_viridis_c(option = "magma") +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of Basal Area",
+        fill = "number of species") +theme(legend.position = "bottom")
+
+p <- ggplot(metadata_plot, aes(x = x, y = y, fill = soil_pH)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(soil_pH, 1)), color = "white") +
+   scale_fill_viridis_c(option = "magma") +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of soil pH",
+        fill = "number of species") +theme(legend.position = "bottom")
+
+l <- ggplot(metadata_plot, aes(x = x, y = y, fill = rel_total_light)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(rel_total_light, 1)), color = "white") +
+   scale_fill_viridis_c(option = "magma") +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of relative total light",
+        fill = "number of species") +theme(legend.position = "bottom")
+
+w <- ggplot(metadata_plot, aes(x = x, y = y, fill = windwardness)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(windwardness, 1)), color = "white") +
+   scale_fill_viridis_c(option = "magma") +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of windwardness",
+        fill = "number of species") +theme(legend.position = "bottom")
+
+#distinciveness now
+dist_summary <- distinctiveness %>%
+   group_by(x, y) %>%
+   summarize(
+      total_Di = sum(Di, na.rm = TRUE),
+      tree_count = n(), # Optional: to see how many trees are in the subplot
+      .groups = "drop"
+   )
+dist_summary$x <- as.character(dist_summary$x)
+dist_summary$y <- as.character(dist_summary$y)
+
+di <- ggplot(dist_summary, aes(x = x, y = y, fill = total_Di)) +
+   geom_tile(color = "white") + # White border makes the grid clear
+   geom_text(aes(label = round(total_Di, 1)), color = "white") +
+   scale_fill_viridis_c(option = "turbo") +
+   coord_fixed() +
+   theme_minimal() +
+   labs(title = "Heatmap of Di",
+        fill = "Distinctiveness")+theme(legend.position = "bottom")
+
+di
+
+library(ggpubr)
+ggarrange(s,d,di, ncol =3)
+
+
+#fit model for saplings and DBH adding plot BA
+library(MuMIn)
+library(performance)
+library(sjPlot)
+# mod_h1a_sap <- lmer(
+#    DBH_log ~ sr + rel_total_light + windwardness + soil_pH + subplot_BA +
+#       (1 | species) + (1 | subplot), data = hypo1_df[hypo1_df$D_cat == "sap",])
+#
+# summary(mod_h1a_sap)
+# r2_nakagawa(mod_h1a_sap)
+# plot_model(mod_h1a_sap)
+#
+# library(DHARMa)
+# res <- simulateResiduals(mod_h1a_sap)
+# plot(res)
+#
+# library(car)
+# vif(mod_h1a_sap)
+
+
+###USE TWEEDIE
+#a specialized Generalized Linear Model (GLM) designed for data that is non-negative,
+#heavily right-skewed, and contains a cluster of exact zero values
+
+# library(glmmTMB)
+#
+# # Use RAW DBH_growth (NOT scaled), but scale your predictors
+# mod_h1a_sap_tweedie <- glmmTMB(DBH_growth ~ sr + rel_total_light +
+#                           windwardness + soil_pH + subplot_BA +
+#                           (1 | species) + (1 | subplot),
+#                        data = hypo1_df[hypo1_df$D_cat == "sap", ],
+#                        family = tweedie(link = "log"))
+#
+# summary(mod_h1a_sap_tweedie)
+# r2_nakagawa(mod_h1a_sap_tweedie)
+# plot_model(mod_h1a_sap_tweedie)
+#
+# library(DHARMa)
+# # For glmmTMB, it's best to use at least 1000 simulations
+# res_tweedie <- simulateResiduals(mod_h1a_sap_tweedie, n = 1000)
+# plot(res_tweedie)
+#
+#
+# #BA
+# mod_h1a_sap_tweedie_BA <- glmmTMB(BA_growth ~ sr + rel_total_light +
+#                                   windwardness + soil_pH + subplot_BA +
+#                                   (1 | species) + (1 | subplot),
+#                                data = hypo1_df[hypo1_df$D_cat == "sap", ],
+#                                family = tweedie(link = "log"))
+#
+#
+# summary(mod_h1a_sap_tweedie_BA)
+# r2_nakagawa(mod_h1a_sap_tweedie_BA)
+# plot_model(mod_h1a_sap_tweedie_BA)
+# plot(simulateResiduals(mod_h1a_sap_tweedie_BA))
+#
+# #plot both
+# library(broom.mixed)
+#
+# # Extract results
+# res_dbh <- tidy(mod_h1a_sap_tweedie, conf.int = TRUE) %>% mutate(model = "DBH Growth")
+# res_ba  <- tidy(mod_h1a_sap_tweedie_BA, conf.int = TRUE) %>% mutate(model = "BA Growth")
+#
+# # Combine and clean (remove random effects and intercepts)
+# all_res <- bind_rows(res_dbh, res_ba) %>%
+#    filter(effect == "fixed", term != "(Intercept)") %>%
+#    mutate(is_significant = ifelse(p.value < 0.05, "Yes", "No"))
+#
+# ggplot(all_res, aes(x = estimate, y = term, color = is_significant)) +
+#    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+#    geom_point(size = 3) +
+#    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+#    facet_wrap(~model) +
+#    # Custom colors: Blue for significant, Grey for not
+#    scale_color_manual(values = c("Yes" = "steelblue", "No" = "grey70")) +
+#    theme_minimal() +
+#    labs(title = "Comparing Predictors of Growth",
+#         subtitle = "Significant results (p < 0.05) highlighted in blue",
+#         x = "Estimate (Log Scale)",
+#         y = "Predictor Variable",
+#         color = "Significant?")
+#
+#
+# #fit model for mature
+# mod_h1a_mat_tweedie <- glmmTMB(DBH_growth ~ sr + rel_total_light +
+#                           windwardness + soil_pH + subplot_BA +
+#                           (1 | species) + (1 | subplot),
+#                        data = hypo1_df[hypo1_df$D_cat == "mat", ],
+#                        family = tweedie(link = "log"))
+#
+# summary(mod_h1a_mat_tweedie)
+# r2_nakagawa(mod_h1a_mat_tweedie)
+# plot_model(mod_h1a_mat_tweedie)
+# plot(simulateResiduals(mod_h1a_mat_tweedie))
+#
+# #BA
+# mod_h1a_mat_tweedie_BA <- glmmTMB(BA_growth ~ sr + rel_total_light +
+#                                   windwardness + soil_pH + subplot_BA +
+#                                   (1 | species) + (1 | subplot),
+#                                data = hypo1_df[hypo1_df$D_cat == "mat", ],
+#                                family = tweedie(link = "log"))
+# summary(mod_h1a_mat_tweedie_BA)
+# r2_nakagawa(mod_h1a_mat_tweedie_BA)
+# plot_model(mod_h1a_mat_tweedie_BA)
+# plot(simulateResiduals(mod_h1a_mat_tweedie_BA))
+
+
+#### try with spatial structure
+# 1. Clean the subplot strings into X and Y
+library(tidyr)
+hypo1_df <- hypo1_df %>%
+   mutate(subplot_xy = gsub("[()]", "", subplot)) %>%
+   separate(subplot_xy, into = c("x", "y"), sep = ",", convert = TRUE)
+
+# 2. Create the pos factor and the group_id column
+library(glmmTMB)
+hypo1_df$pos <- numFactor(hypo1_df$x, hypo1_df$y)
+hypo1_df$group_id <- factor(1) # This is the missing step!
+
+# 3. Filter your data for the model
+sap_data <- hypo1_df[hypo1_df$D_cat == "sap", ]
+
+# 4. Run the model using the new dataframe
+mod_h1a_sap_tweedie_spatial <- glmmTMB(DBH_growth ~ sr + rel_total_light + windwardness +
+                          soil_pH + subplot_BA +
+                          (1 | species) + (1 | subplot) +
+                          exp(pos + 0 | group_id),
+                       data = sap_data,
+                       family = tweedie(link = "log"))
+
+
+
+summary(mod_h1a_sap_tweedie_spatial)
+plot_model(mod_h1a_sap_tweedie_spatial)
+plot(simulateResiduals(mod_h1a_sap_tweedie_spatial))
+
+#mature
+mat_data <- hypo1_df[hypo1_df$D_cat == "mat", ]
+
+# 4. mature
+# mod_h1a_mat_tweedie_spatial <- glmmTMB(DBH_growth ~ sr + rel_total_light + windwardness +
+#                                           soil_pH + subplot_BA +
+#                                           (1 | species) + (1 | subplot) +
+#                                           exp(pos + 0 | group_id),
+#                                        data = mat_data,
+#                                        family = tweedie(link = "log"))
+#
+# summary(mod_h1a_mat_tweedie_spatial)
+# #r2(mod_h1a_mat_tweedie_spatial)
+# plot_model(mod_h1a_mat_tweedie_spatial)
+# plot(simulateResiduals(mod_h1a_mat_tweedie_spatial))
+
+#simplify since we have NA in AIC and no spatial corrlations seemingly
+mod_h1a_mat_tweedie_spatial <- glmmTMB(DBH_growth ~ sr + rel_total_light + windwardness +
+                            soil_pH + subplot_BA +
+                            (1 | species) + (1 | subplot),
+                         data = mat_data,
+                         family = tweedie(link = "log"))
+
+summary(mod_h1a_mat_tweedie_spatial)
+plot_model(mod_h1a_mat_tweedie_spatial)
+plot(simulateResiduals(mod_h1a_mat_tweedie_spatial))
+
+library(ggeffects)
+# Predict effects for the two main drivers
+eff_mat_ph <- ggpredict(mod_h1a_mat_tweedie_spatial, terms = "soil_pH")
+eff_mat_light <- ggpredict(mod_h1a_mat_tweedie_spatial, terms = "rel_total_light")
+
+# Plot pH
+plot(eff_mat_ph) +
+   labs(title = "Mature Tree Growth vs Soil pH", x = "Soil pH (Scaled)", y = "DBH Growth")
+# Plot light
+plot(eff_mat_light) +
+   labs(title = "Mature Tree Growth vs Light availability", x = "Relative light available (Scaled)", y = "DBH Growth")
+
+
+# #different try
+# library(mgcv)
+
+# # A Generalized Additive Mixed Model (GAMM)
+# # 's(x, y)' creates a flexible spatial surface
+# library(mgcv)
+# sap_data$species <- as.factor(sap_data$species)
+# mod_h1a_sap_tweedie_gam <- gam(DBH_growth ~ sr + rel_total_light + windwardness +
+#                   soil_pH + subplot_BA +
+#                   s(species, bs="re") +
+#                   s(x, y), # The spatial 'map'
+#                data = sap_data,
+#                family = tw(link="log"))
+#
+# summary(mod_h1a_sap_tweedie_gam)
+# r2(mod_h1a_sap_tweedie_gam)
+# plot_model(mod_h1a_sap_tweedie_gam)
+# plot(simulateResiduals(mod_h1a_sap_tweedie_gam))
+#
+# mat_data$species <- as.factor(mat_data$species)
+# mod_h1a_mat_tweedie_gam <- gam(DBH_growth ~ sr + rel_total_light + windwardness +
+#                                   soil_pH + subplot_BA +
+#                                   s(species, bs="re") +
+#                                   s(x, y), # The spatial 'map'
+#                                data = mat_data,
+#                                family = tw(link="log"))
+#
+# summary(mod_h1a_mat_tweedie_gam)
+# r2(mod_h1a_mat_tweedie_gam)
+# plot_model(mod_h1a_mat_tweedie_gam)
+# plot(simulateResiduals(mod_h1a_mat_tweedie_gam))
+
+#
+# #2. subplot level
+# hypo1b_df <- left_join(subplot_DBH, metadata, by = "subplot")
+#
+# hypo1b_df <- hypo1b_df %>%
+#    mutate(
+#       total_DBH_log = log1p(total_D_DBH),          # log(x + 1) to handle zeros
+#       total_DBH_log = as.numeric(scale(total_DBH_log)) # scale after log
+#    )
+#
+# hypo1b_df  <- hypo1b_df %>%
+#    mutate(across(
+#       c(total_DBH_log, total_D_DBH, sr, rel_total_light, windwardness, pH),
+#       ~ as.numeric(scale(.))
+#    ))
+#
+# #fit model
+# mod_h1b <- lm(total_DBH_log ~ sr + rel_total_light + windwardness + soil_pH, data = hypo1b_df)
+
+#summary(mod_h1b)
+#plot(mod_h1b)
 
 #now with sapling and mature separatedly
 #2. subplot level
-hypo1b_cat_df <- left_join(species_subplot_DBH_cat, metadata, by = "subplot")
-
-hypo1b_cat_df <- hypo1b_cat_df %>%
-   mutate(
-      DBH_log = log1p(DBH_growth),          # log(x + 1) to handle zeros
-      DBH_log = as.numeric(scale(DBH_log)) # scale after log
-   )
-
-hypo1b_cat_df  <- hypo1b_cat_df %>%
-   mutate(across(
-      c(DBH_log, DBH_growth, sr, rel_total_light, windwardness, pH),
-      ~ as.numeric(scale(.))
-   ))
-
-#fit model
-mod_h1b_sap <- lm(DBH_log ~ sr + rel_total_light + windwardness + soil_pH, data = hypo1b_cat_df[hypo1b_cat_df$D_cat == "sap",])
-
-summary(mod_h1b_sap)
-# Call:
-#    lm(formula = DBH_log ~ sr + rel_total_light + windwardness +
-#          soil_pH, data = hypo1b_cat_df[hypo1b_cat_df$D_cat == "sap",
-#          ])
+# hypo1b_cat_df <- left_join(species_subplot_DBH_cat, metadata, by = "subplot")
 #
-# Residuals:
-#    Min      1Q  Median      3Q     Max
-# -1.5963 -0.6320 -0.2503  0.4211  4.1984
+# hypo1b_cat_df <- hypo1b_cat_df %>%
+#    mutate(
+#       DBH_log = log1p(DBH_growth),          # log(x + 1) to handle zeros
+#       DBH_log = as.numeric(scale(DBH_log)) # scale after log
+#    )
 #
-# Coefficients:
-#    Estimate Std. Error t value Pr(>|t|)
-# (Intercept)     -0.57853    0.46057  -1.256 0.209335
-# sr               0.13139    0.03889   3.378 0.000755 ***
-#    rel_total_light -0.02090    0.03013  -0.694 0.488110
-# windwardness     0.15736    0.03796   4.146 3.65e-05 ***
-#    soil_pH          0.11344    0.12719   0.892 0.372616
-# ---
-#    Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# hypo1b_cat_df  <- hypo1b_cat_df %>%
+#    mutate(across(
+#       c(DBH_log, DBH_growth, sr, rel_total_light, windwardness, pH),
+#       ~ as.numeric(scale(.))
+#    ))
 #
-# Residual standard error: 0.9162 on 1114 degrees of freedom
-# Multiple R-squared:  0.08181,	Adjusted R-squared:  0.07851
-# F-statistic: 24.81 on 4 and 1114 DF,  p-value: < 2.2e-16
+# #fit model
+# mod_h1b_sap <- lm(DBH_log ~ sr + rel_total_light + windwardness + soil_pH, data = hypo1b_cat_df[hypo1b_cat_df$D_cat == "sap",])
+#
+# summary(mod_h1b_sap)
+#mod_h1b_mat <- lm(DBH_log ~ sr + rel_total_light + windwardness + soil_pH, data = hypo1b_cat_df[hypo1b_cat_df$D_cat == "mat",])
 
-mod_h1b_mat <- lm(DBH_log ~ sr + rel_total_light + windwardness + soil_pH, data = hypo1b_cat_df[hypo1b_cat_df$D_cat == "mat",])
-
-summary(mod_h1b_mat)
-# Call:
-#    lm(formula = DBH_log ~ sr + rel_total_light + windwardness +
-#          soil_pH, data = hypo1b_cat_df[hypo1b_cat_df$D_cat == "mat",
-#          ])
-#
-# Residuals:
-#    Min      1Q  Median      3Q     Max
-# -1.7021 -0.7977 -0.1346  0.6991  4.3454
-#
-# Coefficients:
-#    Estimate Std. Error t value Pr(>|t|)
-# (Intercept)      0.42384    0.73409   0.577   0.5640
-# sr              -0.13171    0.06433  -2.047   0.0411 *
-#    rel_total_light  0.05302    0.04839   1.096   0.2737
-# windwardness     0.14878    0.06320   2.354   0.0190 *
-#    soil_pH         -0.02194    0.20235  -0.108   0.9137
-# ---
-#    Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Residual standard error: 1.01 on 505 degrees of freedom
-# Multiple R-squared:  0.01493,	Adjusted R-squared:  0.00713
-# F-statistic: 1.914 on 4 and 505 DF,  p-value: 0.1068
+#summary(mod_h1b_mat)
 
 #b) recruitment at a plot level
 hypo1bb_df <- left_join(subplot_recruitment, metadata, by = "subplot")
-
 hypo1bb_df  <- hypo1bb_df %>%
    mutate(across(
       c(sr, rel_total_light, windwardness, pH),
       ~ as.numeric(scale(.))
    ))
 
-#fit model
-mod_h1bb <- glm(total_recruits ~ sr + rel_total_light + windwardness + soil_pH, family = "poisson", data = hypo1bb_df)
+hypo1bb_df <- hypo1bb_df %>%
+   mutate(subplot_clean = gsub("[()]", "", subplot)) %>%
+   separate(subplot_clean, into = c("x", "y"), sep = ",", convert = TRUE)
 
-summary(mod_h1bb)
+# 2. Create the spatial factor
+hypo1bb_df$pos <- numFactor(hypo1bb_df$x, hypo1bb_df$y)
+hypo1bb_df$group_id <- factor(1) # Still used to define the single study area
+# # 2. Fit the Spatial Poisson Model
+# mod_recruitment <- glmmTMB(total_recruits ~ sr + rel_total_light +
+#                               soil_pH + subplot_BA + windwardness +
+#                               exp(pos + 0 | group_id),
+#                            data = hypo1bb_df,
+#                            family = poisson(link = "log"))
+#
+# summary(mod_recruitment)
 
-# Call:
-#    glm(formula = total_recruits ~ sr + rel_total_light + windwardness +
-#           soil_pH, family = "poisson", data = hypo1bb_df)
-#
-# Coefficients:
-#    Estimate Std. Error z value Pr(>|z|)
-# (Intercept)      0.95025    1.09105   0.871   0.3838
-# sr               0.49270    0.07000   7.038 1.95e-12 ***
-#    rel_total_light  0.10429    0.05929   1.759   0.0786 .
-# windwardness     0.13619    0.07139   1.908   0.0564 .
-# soil_pH          0.11219    0.30118   0.372   0.7095
-# ---
-#    Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# (Dispersion parameter for poisson family taken to be 1)
-#
-# Null deviance: 313.84  on 72  degrees of freedom
-# Residual deviance: 133.97  on 68  degrees of freedom
-# AIC: 366.08
-#
-# Number of Fisher Scoring iterations: 5
+# Switch family to nbinom2
+mod_rec_final <- glmmTMB(total_recruits ~ sr + rel_total_light + soil_pH +
+                            subplot_BA + windwardness,
+                         data = hypo1bb_df,
+                         family = nbinom2(link = "log"))
 
-plot(mod_h1bb)
+summary(mod_rec_final)
+
+library(DHARMa)
+testDispersion(simulateResiduals(mod_rec_final))
+
+library(ggeffects)
+# Predict recruits based on SR
+eff_rec <- ggpredict(mod_rec_final, terms = "sr")
+
+# Plot it
+plot(eff_rec) +
+   labs(title = "Effect of Species Richness on Recruitment",
+        x = "Species Richness (Scaled)",
+        y = "Predicted Number of Recruits") +
+   theme_minimal()
+
+# 1. Generate predicted values for Species Richness
+# This uses the 'mod_rec_final' (nbinom2) you just ran
+eff_rec_sr <- ggpredict(mod_rec_final, terms = "sr")
+
+# 2. Create a high-quality visualization
+plot_recruitment <- ggplot(eff_rec_sr, aes(x = x, y = predicted)) +
+   # Add the confidence interval ribbon
+   geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "#2c7fb8", alpha = 0.15) +
+   # Add the main prediction line
+   geom_line(color = "#2c7fb8", size = 1.2) +
+   # Formatting
+   labs(
+      title = "Impact of Diversity on Forest Recruitment",
+      subtitle = "Predicted counts with 95% Confidence Intervals",
+      x = "Species Richness (Standardized)",
+      y = "Predicted Number of Recruits per Plot"
+   ) +
+   theme_minimal(base_size = 14) +
+   theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+   )
+
+# plot
+print(plot_recruitment)
+plot_model(mod_rec_final)
+plot(simulateResiduals(mod_rec_final))
+
+
+#r2
+# 1. Fit the Null Model (Intercept only)
+mod_null <- glmmTMB(total_recruits ~ 1,
+                    data = hypo1bb_df,
+                    family = nbinom2(link = "log"))
+
+# 2. Extract values
+L_full <- as.numeric(logLik(mod_rec_final))
+L_null <- as.numeric(logLik(mod_null))
+n <- nobs(mod_rec_final)
+
+# 3. Nagelkerke Formula
+r2_nagelkerke <- (1 - exp(-2/n * (L_full - L_null))) / (1 - exp(2/n * L_null))
+
+print(paste("Nagelkerke Pseudo-R2:", round(r2_nagelkerke, 3)))
+
+
+####plot all effects in one
+library(broom.mixed)
+
+# 1. Extract Sapling results (Spatial Tweedie)
+res_sap <- tidy(mod_h1a_sap_tweedie_spatial, conf.int = TRUE) %>%
+   mutate(Model = "Sapling Growth (n=3336)")
+
+# 2. Extract Mature results (Standard Tweedie)
+res_mat <- tidy(mod_h1a_mat_tweedie_spatial, conf.int = TRUE) %>%
+   mutate(Model = "Mature Growth (n=913)")
+
+# 3. Extract Recruitment results (Negative Binomial)
+res_rec <- tidy(mod_rec_final, conf.int = TRUE) %>%
+   mutate(Model = "Recruitment (n=73 Plots)")
+
+# 4. Combine all, filter out Intercepts, and flag Significance
+all_results <- bind_rows(res_sap, res_mat, res_rec) %>%
+   filter(effect == "fixed", term != "(Intercept)") %>%
+   mutate(Significant = ifelse(p.value < 0.05, "Yes", "No"))
+
+# 5. Create the 3-panel Plot
+ggplot(all_results, aes(x = estimate, y = term, color = Significant)) +
+   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+   geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.3, size = 0.8) +
+   geom_point(size = 3) +
+   # Facet by Model, keeping the 3 lifecycle stages separate
+   facet_wrap(~factor(Model, levels=c("Recruitment (n=73 Plots)",
+                                      "Sapling Growth (n=3336)",
+                                      "Mature Growth (n=913)")),
+              scales = "free_x") +
+   scale_color_manual(values = c("Yes" = "#2171b5", "No" = "#bdbdbd")) +
+   theme_minimal() +
+   labs(title = "Forest Dynamics Across Life Stages",
+        subtitle = "Significant drivers (p < 0.05) highlighted in blue",
+        x = "Coefficient Estimate (Log Scale)",
+        y = "") +
+   theme(legend.position = "bottom",
+         strip.text = element_text(size = 15, face = "bold"),
+         axis.text.y = element_text(size = 14),
+         axis.text.x = element_text(size = 13))
+
+
+#tables
+library(broom.mixed)
+library(purrr)
+
+# Function to tidy and add model labels
+get_tidy <- function(model, label) {
+   tidy(model, conf.int = TRUE) %>%
+      mutate(model_name = label) %>%
+      filter(effect == "fixed") # Focus only on fixed effects
+}
+
+# Combine them
+final_table <- bind_rows(
+   get_tidy(mod_rec_final, "Recruitment"),
+   get_tidy(mod_h1a_sap_tweedie_spatial, "Sapling"),
+   get_tidy(mod_h1a_mat_tweedie_spatial, "Mature")
+)
+
+# Export to Excel-ready CSV
+setwd("~/Documents/git/lalashan/results")
+write.csv(final_table, "Growth_rec_SR_Forest_Models.csv", row.names = FALSE)
+
+
+# #fit model
+# mod_h1bb <- glm(total_recruits ~ sr + rel_total_light + windwardness + soil_pH, family = "poisson", data = hypo1bb_df)
+#
+# summary(mod_h1bb)
+#
+# # Call:
+# #    glm(formula = total_recruits ~ sr + rel_total_light + windwardness +
+# #           soil_pH, family = "poisson", data = hypo1bb_df)
+# #
+# # Coefficients:
+# #    Estimate Std. Error z value Pr(>|z|)
+# # (Intercept)      0.95025    1.09105   0.871   0.3838
+# # sr               0.49270    0.07000   7.038 1.95e-12 ***
+# #    rel_total_light  0.10429    0.05929   1.759   0.0786 .
+# # windwardness     0.13619    0.07139   1.908   0.0564 .
+# # soil_pH          0.11219    0.30118   0.372   0.7095
+# # ---
+# #    Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# #
+# # (Dispersion parameter for poisson family taken to be 1)
+# #
+# # Null deviance: 313.84  on 72  degrees of freedom
+# # Residual deviance: 133.97  on 68  degrees of freedom
+# # AIC: 366.08
+# #
+# # Number of Fisher Scoring iterations: 5
+#
+# plot(mod_h1bb)
 
 ####H2####
 #2. we expect a positive relationships between species functional distinctiveness and trait variation
@@ -561,245 +951,159 @@ plot(mod_h1bb)
 hypo2_df <- merge(tree_trait_cv, metadata, by = "subplot")
 hypo2_df$col <- paste(hypo2_df$subplot,hypo2_df$species, sep = "")
 hypo2_df <- merge(hypo2_df, distinctiveness[!distinctiveness$Di == 0,], by = "col")
-hypo2_df <- hypo2_df[,-61]
+hypo2_df <- hypo2_df[,-62]
 #rename species col species
 names(hypo2_df)[names(hypo2_df) == 'species.x'] <- 'species'
 
 hypo2_df  <- hypo2_df %>%
    mutate(across(
-      c(Di, rel_total_light, windwardness, pH),
+      c(rel_total_light, windwardness, soil_pH, subplot_BA),
       ~ as.numeric(scale(.))
    ))
+
+hypo2_df <- hypo2_df %>%
+   mutate(subplot_clean = gsub("[()]", "", subplot)) %>%
+   separate(subplot_clean, into = c("x", "y"), sep = ",", convert = TRUE)
+
+# 2. Create the spatial factor
+hypo2_df$pos <- numFactor(hypo2_df$x, hypo2_df$y)
+hypo2_df$group_id <- factor(1) # Still used to define the single study area
 
 #fit model for distinctiveness
-mod_h2a <- lmer(
-   Di ~ rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo2_df)
-summary(mod_h2a)
+distinctiveness_gamma <- glmmTMB(Di ~ rel_total_light + windwardness +
+                        soil_pH + subplot_BA +
+                        (1 | species) +
+                        exp(pos + 0 | group_id),
+                     data = hypo2_df,
+                     family = Gamma(link = "log"))
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: Di ~ rel_total_light + windwardness + soil_pH + (1 | species) +      (1 | subplot)
-#    Data: hypo2_df
-#
-# REML criterion at convergence: 1216.9
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -3.1472 -0.6331 -0.0536  0.5195  3.0355
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  species  (Intercept) 0.6987   0.8359
-#  subplot  (Intercept) 1.1566   1.0755
-#  Residual             0.2233   0.4726
-# Number of obs: 690, groups:  species, 52; subplot, 32
-#
-# Fixed effects:
-#                 Estimate Std. Error      df t value Pr(>|t|)
-# (Intercept)       4.3144     2.9008 23.2348   1.487   0.1504
-# rel_total_light  -0.4062     0.1961 22.8695  -2.072   0.0497 *
-# windwardness      0.1985     0.2159 23.0494   0.919   0.3674
-# soil_pH          -0.9881     0.7907 23.1260  -1.250   0.2239
-# ---
-# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Correlation of Fixed Effects:
-#             (Intr) rl_tt_ wndwrd
-# rl_ttl_lght  0.222
-# windwardnss  0.253  0.051
-# soil_pH     -0.997 -0.215 -0.243
+summary(distinctiveness_gamma)
+plot(simulate_residuals(distinctiveness_gamma))
 
-#b)single linear mixed model relating species traits variation at individual level with sr + light + soil resources + windwardness as covariates + subplot as random effect
-hypo2_df  <- hypo2_df %>%
-   mutate(across(
-      c(LA_CV, Chl_CV, SLA_CV, LT_CV, LDMC_CV),
-      ~ as.numeric(scale(.))
-   ))
+# Create the plot
 
-#fit one model for each traits CV
-#LA
-mod_h2b_LA <- lmer(
-   LA_CV ~ rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo2_df)
-summary(mod_h2b_LA)
+####plot all effects in one
+library(broom.mixed)
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: LA_CV ~ rel_total_light + windwardness + soil_pH + (1 | species) +      (1 | subplot)
-#    Data: hypo2_df
-#
-# REML criterion at convergence: 1951.7
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.9990 -0.7324 -0.1211  0.6031  3.4236
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  species  (Intercept) 0.06471  0.25437
-#  subplot  (Intercept) 0.00642  0.08012
-#  Residual             0.93211  0.96546
-# Number of obs: 690, groups:  species, 52; subplot, 32
-#
-# Fixed effects:
-#                   Estimate Std. Error         df t value Pr(>|t|)
-# (Intercept)      0.4230408  0.6341785 21.8014081   0.667    0.512
-# rel_total_light  0.0070628  0.0405239 19.8015046   0.174    0.863
-# windwardness     0.0006351  0.0435998 15.7772420   0.015    0.989
-# soil_pH         -0.0999597  0.1705186 20.9098949  -0.586    0.564
-#
-# Correlation of Fixed Effects:
-#             (Intr) rl_tt_ wndwrd
-# rl_ttl_lght  0.046
-# windwardnss  0.309  0.038
-# soil_pH     -0.995 -0.046 -0.312
+# 1. Extract Sapling results (Spatial Tweedie)
+res_di <- tidy(distinctiveness_gamma, conf.int = TRUE)%>%
+   mutate(Significant = ifelse(p.value < 0.05, "Yes", "No"))%>%
+   filter(effect == "fixed", term != "(Intercept)") %>%
+   # Optional: Clean up term names for a prettier y-axis
+   mutate(term = gsub("_", " ", term))
 
-#SLA
-mod_h2b_SLA <- lmer(
-   SLA_CV ~ rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo2_df)
-summary(mod_h2b_SLA)
+# 5. Create Plot
+ggplot(res_di, aes(x = estimate, y = reorder(term, estimate), color = Significant)) +
+   # Add a vertical line at 0 (the 'no effect' line)
+   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+   # Confidence intervals
+   geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                  height = 0.2, size = 0.8) +
+   # Point estimates
+   geom_point(size = 3.5) +
+   # Custom colors: Blue for significant, Gray for non-significant
+   scale_color_manual(values = c("Yes" = "#2171b5", "No" = "#bdbdbd")) +
+   theme_minimal() +
+   labs(x = "Coefficient Estimate (Log Scale)",
+        y = NULL,
+        title = "Fixed Effects Results",
+        subtitle = "Error bars represent 95% Confidence Intervals") +
+   theme(legend.position = "bottom",
+         strip.text = element_text(size = 15, face = "bold"),
+         axis.text.y = element_text(size = 14),
+         axis.text.x = element_text(size = 13),
+         panel.grid.minor = element_blank())
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: SLA_CV ~ rel_total_light + windwardness + soil_pH + (1 | species) +      (1 | subplot)
-#    Data: hypo2_df
-#
-# REML criterion at convergence: 1921.6
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.7853 -0.6493 -0.2213  0.4486  6.6256
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  species  (Intercept) 0.15494  0.3936
-#  subplot  (Intercept) 0.02068  0.1438
-#  Residual             0.85640  0.9254
-# Number of obs: 690, groups:  species, 52; subplot, 32
-#
-# Fixed effects:
-#                 Estimate Std. Error       df t value Pr(>|t|)
-# (Intercept)      0.75097    0.71153 23.36455   1.055   0.3020
-# rel_total_light -0.03775    0.04571 20.71262  -0.826   0.4183
-# windwardness     0.10941    0.04995 18.63483   2.190   0.0414 *
-# soil_pH         -0.17921    0.19161 22.44856  -0.935   0.3596
-# ---
-# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Correlation of Fixed Effects:
-#             (Intr) rl_tt_ wndwrd
-# rl_ttl_lght  0.078
-# windwardnss  0.300  0.034
-# soil_pH     -0.994 -0.078 -0.301
+#b)model relating species traits variation at individual level with sr + light + soil resources + windwardness as covariates + subplot as random effect
+library(tidyr)
+# 1. Reshape data
+long_df <- hypo2_df %>%
+   pivot_longer(cols = c(LA_CV, SLA_CV, LDMC_CV, LT_CV, Chl_CV),
+                names_to = "Trait",
+                values_to = "CV")
 
-#LT
-mod_h2b_LT <- lmer(
-   LT_CV ~ rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo2_df)
-summary(mod_h2b_LT)
+# 2. Model with interaction
+mod_all_traits <- glmmTMB(CV ~ Trait * rel_total_light + soil_pH + windwardness + subplot_BA +
+                             (1 | species) + (1 | subplot),
+                          data = long_df,
+                          family = tweedie(link = "log"),
+                          start = list(psi = log(1.5 - 1) - log(2 - 1.5)),
+                          map = list(psi = factor(NA)))
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: LT_CV ~ rel_total_light + windwardness + soil_pH + (1 | species) +      (1 | subplot)
-#    Data: hypo2_df
-#
-# REML criterion at convergence: 1910.1
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.8080 -0.6402 -0.1882  0.3844  5.5282
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  species  (Intercept) 0.13107  0.3620
-#  subplot  (Intercept) 0.02185  0.1478
-#  Residual             0.84641  0.9200
-# Number of obs: 690, groups:  species, 52; subplot, 32
-#
-# Fixed effects:
-#                 Estimate Std. Error       df t value Pr(>|t|)
-# (Intercept)      0.31285    0.71463 24.20192   0.438    0.665
-# rel_total_light -0.07523    0.04597 21.47717  -1.636    0.116
-# windwardness     0.08241    0.05024 19.45375   1.640    0.117
-# soil_pH         -0.06388    0.19255 23.31534  -0.332    0.743
-#
-# Correlation of Fixed Effects:
-#             (Intr) rl_tt_ wndwrd
-# rl_ttl_lght  0.081
-# windwardnss  0.300  0.034
-# soil_pH     -0.994 -0.081 -0.300
+summary(mod_all_traits)
+plot(simulate_residuals(mod_all_traits))
 
-#LDMC
-mod_h2b_LDMC <- lmer(
-   LDMC_CV ~ rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo2_df)
-summary(mod_h2b_LDMC)
+# Calculate predicted marginal effects
+# 'terms = c("rel_total_light", "Trait")' tells it to plot light on X and group by Trait
+pred_cv <- predict_response(mod_all_traits, terms = c("rel_total_light", "Trait"))
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: LDMC_CV ~ rel_total_light + windwardness + soil_pH + (1 | species) +      (1 | subplot)
-#    Data: hypo2_df
-#
-# REML criterion at convergence: 1954.9
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.2715 -0.5695 -0.2429  0.1919  7.8344
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  species  (Intercept) 0.05299  0.2302
-#  subplot  (Intercept) 0.01431  0.1196
-#  Residual             0.93616  0.9676
-# Number of obs: 690, groups:  species, 52; subplot, 32
-#
-# Fixed effects:
-#                  Estimate Std. Error        df t value Pr(>|t|)
-# (Intercept)      0.011355   0.686357 21.043588   0.017    0.987
-# rel_total_light -0.030011   0.044066 18.864859  -0.681    0.504
-# windwardness     0.053957   0.047780 16.155325   1.129    0.275
-# soil_pH         -0.003372   0.184863 20.312203  -0.018    0.986
-#
-# Correlation of Fixed Effects:
-#             (Intr) rl_tt_ wndwrd
-# rl_ttl_lght  0.066
-# windwardnss  0.306  0.037
-# soil_pH     -0.996 -0.066 -0.306
+# 2. Create the Interaction Plot
+ggplot(pred_cv, aes(x = x, y = predicted, color = group, fill = group)) +
+   geom_line(size = 1.2) +
+   geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.1, color = NA) +
+   scale_color_brewer(palette = "Set1") +
+   scale_fill_brewer(palette = "Set1") +
+   theme_minimal() +
+   labs(
+      title = "Effect of Light on Trait Variability (CV)",
+      subtitle = "Lines show predicted slopes; Shaded areas are 95% CI",
+      x = "Relative Total Light (Standardized)",
+      y = "Predicted CV",
+      color = "Leaf Trait",
+      fill = "Leaf Trait"
+   ) +
+   theme(
+      legend.position = "right",
+      axis.title = element_text(face = "bold"),
+      plot.title = element_text(size = 16)
+   )
 
-#Chl
-mod_h2b_Chl <- lmer(
-   Chl_CV ~ rel_total_light + windwardness + soil_pH +
-      (1 | species) + (1 | subplot), data = hypo2_df)
-summary(mod_h2b_Chl)
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: Chl_CV ~ rel_total_light + windwardness + soil_pH + (1 | species) +      (1 | subplot)
-#    Data: hypo2_df
-#
-# REML criterion at convergence: 1964
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.1418 -0.5118 -0.1880  0.2875 17.9250
-#
-# Random effects:
-#  Groups   Name        Variance Std.Dev.
-#  species  (Intercept) 0.022172 0.14890
-#  subplot  (Intercept) 0.005545 0.07446
-#  Residual             0.970387 0.98508
-# Number of obs: 690, groups:  species, 52; subplot, 32
-#
-# Fixed effects:
-#                 Estimate Std. Error       df t value Pr(>|t|)
-# (Intercept)      0.27700    0.63308 19.81587   0.438   0.6664
-# rel_total_light -0.08633    0.04055 18.17517  -2.129   0.0472 *
-# windwardness     0.01557    0.04347 14.21521   0.358   0.7255
-# soil_pH         -0.07478    0.17031 19.09460  -0.439   0.6655
-# ---
-# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Correlation of Fixed Effects:
-#             (Intr) rl_tt_ wndwrd
-# rl_ttl_lght  0.045
-# windwardnss  0.315  0.040
-# soil_pH     -0.997 -0.045 -0.316
+#facet plot
+ggplot() +
+   # Raw data points in the background
+   geom_jitter(data = long_df,
+               aes(x = rel_total_light, y = CV, color = Trait),
+               alpha = 0.15, size = 0.8, width = 0.02) +
+   # Model prediction lines
+   geom_line(data = pred_cv,
+             aes(x = x, y = predicted, color = group),
+             size = 1.2) +
+   # Confidence intervals
+   geom_ribbon(data = pred_cv,
+               aes(x = x, ymin = conf.low, ymax = conf.high, fill = group),
+               alpha = 0.2) +
+   # The Facet Command
+   # "scales = 'free_y'" lets each trait have its own Y-axis range
+   facet_wrap(~group, scales = "free_y", ncol = 3) +
+   scale_color_brewer(palette = "Dark2") +
+   scale_fill_brewer(palette = "Dark2") +
+   theme_minimal() +
+   labs(
+      title = "Trait Variability (CV) across Light Gradient",
+      subtitle = "Faceted by Leaf Trait (Note different Y-axis scales)",
+      x = "Relative Total Light (Standardized)",
+      y = "Trait CV",
+      color = "Trait",
+      fill = "Trait"
+   ) +
+   theme(
+      legend.position = "none", # Legend is redundant with facet titles
+      strip.text = element_text(face = "bold", size = 12),
+      panel.spacing = unit(1.5, "lines")
+   )
+
+# install.packages("sjPlot")
+library(sjPlot)
+
+tab_model(mod_all_traits,
+          show.re.var = TRUE,
+          show.stat = TRUE,
+          show.zeroinf = FALSE,
+          p.style = "numeric_stars",
+          title = "Mixed-Effects Model Summary (Tweedie Family)",
+          dv.labels = "Trait CV (Log Link)")
+
 
 #3. hypothesis: we expect a positive relationship between growth and recruitment with
 # trait variations and distinctiveness at the species by suplot level
@@ -810,152 +1114,146 @@ hypo3_df <- left_join(tree_trait_cv, hypo1_df, by = "ind")
 hypo3_df$col <- paste(hypo3_df$subplot.x,hypo3_df$species.x, sep = "")
 #join with distinctiveness
 hypo3_df <- merge(hypo3_df, distinctiveness, by = "col", all = F)
+#Create the pos factor and the group_id column
 
-#use CV directly
-mod_h3b_sap <- lmer(
-   DBH_log ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di + windwardness + soil_pH +
-      (1 | species.x) + (1 | subplot.x), data = hypo3_df[hypo3_df$D_cat == "sap",])
-summary(mod_h3b_sap)
+hypo3_df <- hypo3_df %>%
+   mutate(subplot_clean = gsub("[()]", "", subplot.x)) %>%
+   separate(subplot_clean, into = c("x", "y"), sep = ",", convert = TRUE)
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: DBH_log ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di + windwardness +
-#     soil_pH + (1 | species.x) + (1 | subplot.x)
-#    Data: hypo3_df[hypo3_df$D_cat == "sap", ]
-#
-# REML criterion at convergence: 959.2
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -2.1586 -0.6965 -0.1822  0.5103  3.5190
-#
-# Random effects:
-#  Groups    Name        Variance Std.Dev.
-#  species.x (Intercept) 0.04987  0.2233
-#  subplot.x (Intercept) 0.02920  0.1709
-#  Residual              0.53123  0.7289
-# Number of obs: 420, groups:  species.x, 49; subplot.x, 33
-#
-# Fixed effects:
-#               Estimate Std. Error        df t value Pr(>|t|)
-# (Intercept)    0.13766    0.81050  31.91687   0.170   0.8662
-# SLA_CV         0.83337    0.96249 410.63555   0.866   0.3871
-# LA_CV          1.00325    0.42226 408.10024   2.376   0.0180 *
-# LDMC_CV        0.06499    1.09040 405.55450   0.060   0.9525
-# LT_CV          0.35999    0.87942 404.67359   0.409   0.6825
-# Chl_CV        -2.04546    0.90458 408.01666  -2.261   0.0243 *
-# Di            -0.28033    0.29108 222.53122  -0.963   0.3365
-# windwardness   0.15310    0.06729  22.08347   2.275   0.0330 *
-# soil_pH       -0.08224    0.20575  27.36261  -0.400   0.6925
-# ---
-# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
-#
-# Correlation of Fixed Effects:
-#             (Intr) SLA_CV LA_CV  LDMC_C LT_CV  Chl_CV Di     wndwrd
-# SLA_CV      -0.068
-# LA_CV       -0.047  0.033
-# LDMC_CV      0.050 -0.558 -0.039
-# LT_CV        0.006 -0.380 -0.235  0.148
-# Chl_CV      -0.098 -0.163 -0.040 -0.205  0.030
-# Di          -0.314 -0.024 -0.058 -0.069 -0.068  0.180
-# windwardnss  0.358 -0.087  0.027  0.038 -0.014 -0.031 -0.131
-# soil_pH     -0.973  0.057 -0.012 -0.043 -0.033  0.024  0.140 -0.312
+hypo3_df  <- hypo3_df %>%
+   mutate(across(
+      c(SLA_CV, LA_CV, LDMC_CV, LT_CV, Chl_CV, Di, rel_total_light, windwardness, soil_pH, subplot_BA),
+      ~ as.numeric(scale(.))
+   ))
 
-library(performance)
-r2(mod_h3b_sap)
-# Conditional R2: 0.173
-# Marginal R2: 0.050
+hypo3_df$pos <- numFactor(hypo3_df$x, hypo3_df$y)
+hypo3_df$group_id <- factor(1) # This is the missing step!
 
-mod_h3b_mat <- lmer(
-   DBH_log ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di + windwardness + soil_pH +
-      (1 | species.x) + (1 | subplot.x), data = hypo3_df[hypo3_df$D_cat == "mat",])
-summary(mod_h3b_mat)
+library(glmmTMB)
+library(broom.mixed)
+library(dplyr)
+library(purrr)
 
-# Linear mixed model fit by REML. t-tests use Satterthwaite's method ['lmerModLmerTest']
-# Formula: DBH_log ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di + windwardness +
-#     soil_pH + (1 | species.x) + (1 | subplot.x)
-#    Data: hypo3_df[hypo3_df$D_cat == "mat", ]
-#
-# REML criterion at convergence: 416.8
-#
-# Scaled residuals:
-#     Min      1Q  Median      3Q     Max
-# -1.8906 -0.6518 -0.1223  0.5611  2.9940
-#
-# Random effects:
-#  Groups    Name        Variance Std.Dev.
-#  species.x (Intercept) 0.3438   0.5864
-#  subplot.x (Intercept) 0.1474   0.3839
-#  Residual              1.0368   1.0182
-# Number of obs: 141, groups:  species.x, 26; subplot.x, 25
-#
-# Fixed effects:
-#              Estimate Std. Error       df t value Pr(>|t|)
-# (Intercept)    1.8441     2.1129  15.6632   0.873    0.396
-# SLA_CV         2.1996     2.7419 129.7876   0.802    0.424
-# LA_CV         -0.7579     1.1081 122.2081  -0.684    0.495
-# LDMC_CV       -2.2911     4.3031 130.6293  -0.532    0.595
-# LT_CV          2.0446     1.7496 131.2118   1.169    0.245
-# Chl_CV        -0.6649     0.9071 126.1519  -0.733    0.465
-# Di            -1.1974     1.0379  72.3883  -1.154    0.252
-# windwardness  -0.1226     0.1631  13.5820  -0.752    0.465
-# soil_pH       -0.2559     0.5343  14.2187  -0.479    0.639
-#
-# Correlation of Fixed Effects:
-#             (Intr) SLA_CV LA_CV  LDMC_C LT_CV  Chl_CV Di     wndwrd
-# SLA_CV      -0.122
-# LA_CV       -0.179  0.121
-# LDMC_CV     -0.012 -0.640 -0.106
-# LT_CV        0.082 -0.499 -0.234  0.259
-# Chl_CV      -0.011  0.092 -0.109 -0.131 -0.020
-# Di          -0.248  0.171  0.092 -0.039 -0.267 -0.050
-# windwardnss  0.319 -0.026 -0.048  0.089 -0.066 -0.007  0.024
-# soil_pH     -0.962  0.051  0.096  0.018 -0.041 -0.003  0.017 -0.295
+# Define your formula once to stay DRY (Don't Repeat Yourself)
+model_formula <- DBH_growth ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di +
+   rel_total_light + windwardness + soil_pH + subplot_BA +
+   (1 | species) + (1 | subplot.x) + exp(pos + 0 | group_id)
 
-r2(mod_h3b_mat)
-# Conditional R2: 0.351
-# Marginal R2: 0.043
+# Split data by life stage and run models in a list
+model_list <- hypo3_df %>%
+   split(.$D_cat) %>%
+   map(~ glmmTMB(model_formula, data = .x, family = tweedie(link = "log")))
 
+# Extract tidied results from both models into one dataframe
+plot_data_auto <- model_list %>%
+   map_dfr(tidy, conf.int = TRUE, .id = "Model") %>%
+   filter(effect == "fixed", term != "(Intercept)")
+
+# Optional: Rename categories for the plot
+plot_data_auto <- plot_data_auto %>%
+   mutate(Model = dplyr::recode(Model, "sap" = "Sapling", "mat" = "Mature"),
+          term = dplyr::recode(term, "rel_total_light" = "Light",
+                        "windwardness" = "Windwardness",
+                        "soil_pH" = "pH",
+                        "subplot_BA" = "Subplot_BA"))
+
+# Add a significance column to help the viewer's eye
+plot_data_auto <- plot_data_auto %>%
+   mutate(Significant = if_else(conf.low > 0 | conf.high < 0, "Yes", "No"))
+
+# The Plot
+ggplot(plot_data_auto, aes(x = estimate, y = reorder(term, estimate), color = Model)) +
+   # Add a vertical reference line at 0
+   geom_vline(xintercept = 0, linetype = "dashed", color = "gray60", size = 0.6) +
+
+   # Add the error bars (Confidence Intervals)
+   geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                  height = 0.3, size = 0.9, alpha = 0.7,
+                  position = position_dodge(width = 0.6)) +
+
+   # Add the point estimates
+   # We use a different shape for significant results to make it 'colorblind friendly'
+   geom_point(aes(shape = Significant), size = 3.5,
+              position = position_dodge(width = 0.6)) +
+
+   # Custom Styling
+   scale_color_manual(values = c("Sapling" = "#2c7fb8", "Mature" = "#d95f02")) +
+   scale_shape_manual(values = c("Yes" = 19, "No" = 1)) + # Solid for Sig, Hollow for Non-Sig
+
+   theme_minimal(base_size = 14) +
+   labs(title = "Drivers of DBH Growth by Life Stage",
+        subtitle = "Points represent log-betas; error bars are 95% CIs",
+        x = "Standardized Coefficient (Log Scale)",
+        y = NULL,
+        color = "Life Stage",
+        shape = "Significant (p < 0.05)") +
+
+   theme(
+      legend.position = "bottom",
+      panel.grid.minor = element_blank(),
+      axis.text.y = element_text(face = "bold", color = "black"),
+      plot.title = element_text(face = "bold", size = 16),
+      strip.background = element_rect(fill = "gray95", color = NA)
+   )
+
+
+
+
+###RECRUITS
 #now same but with number or recruits per species CV and by species distinctiveness
 #generate species level traits db
-hypo3b_df <- hypo3_df %>%
-   group_by(species) %>%
-   summarise(across(where(is.numeric), mean, na.rm = TRUE)) %>%
-   ungroup()
+hypo3_df$ind <- as.factor(hypo3_df$ind)
+hypo3_df$key <- paste(hypo3_df$species, hypo3_df$subplot.x)
 
-hypo3b_df <- left_join(species_recruitment, hypo3b_df, by = "species")
+species_subplot_recruitment$key <- paste(species_subplot_recruitment$species, species_subplot_recruitment$subplot)
+
+hypo3b_df <- merge(species_subplot_recruitment, hypo3_df, by = "key", all = T)
+hypo3b_df$total_recruits[is.na(hypo3b_df$total_recruits)] <- 0
 
 #model
-mod_h3b_2 <- glm(
-   total_recruits ~ SLA_CV + LA_CV + LDMC_CV + LT_CV + Chl_CV + Di, family = "poisson",data = hypo3b_df)
-summary(mod_h3b_2)
+mod_h3_simplified <- glmmTMB(
+   total_recruits ~ scale(SLA_CV) + scale(Di) + scale(rel_total_light) +
+      scale(windwardness) + scale(soil_pH) + scale(subplot_BA) +
+      (1 | species.x) + (1 | subplot.x),
+   data = hypo3b_df,
+   ziformula = ~0,           # Disabled because -18.86 suggests it's not needed
+   family = nbinom2
+)
 
-#Call:
-#   glm(formula = total_recruits ~ SLA_CV + LA_CV + LDMC_CV + LT_CV +
-#          Chl_CV + Di, family = "poisson", data = hypo3b_df)
+summary(mod_h3_simplified)
+r2(mod_h3_simplified)
 
-#Coefficients:
-#   Estimate Std. Error z value Pr(>|z|)
-#(Intercept)   4.2896     0.4159  10.314  < 2e-16 ***
-#   SLA_CV      -28.2653     4.8180  -5.867 4.45e-09 ***
-#   LA_CV        -0.6410     1.8654  -0.344 0.731116
-#.  LDMC_CV      34.9161     5.9284   5.890 3.87e-09 ***
-#   LT_CV         4.3040     3.9178   1.099 0.271950
-#.  Chl_CV       11.5567     3.0252   3.820 0.000133 ***
-#   Di           -4.9418     0.6436  -7.679 1.61e-14 ***
-#   ---
-#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+library(MASS)
 
-#(Dispersion parameter for poisson family taken to be 1)
+# Fit the Negative Binomial GLM
+mod_final <- glm.nb(total_recruits ~ scale(SLA_CV) + scale(Di) +
+                       scale(rel_total_light) + scale(windwardness) +
+                       scale(soil_pH) + scale(subplot_BA),
+                    data = hypo3b_df)
 
-#Null deviance: 592.64  on 31  degrees of freedom
-#Residual deviance: 424.48  on 25  degrees of freedom
-#(5 observations deleted due to missingness)
-#AIC: 546.73
+summary(mod_final)
+r2(mod_final)
 
-#Number of Fisher Scoring iterations: 6
+library(DHARMa)
+plot(simulateResiduals(mod_final))
 
-####careful with overfitting!!
-r2(mod_h3b_2)
+#plot
+# Load necessary libraries
+library(sjPlot)
+library(ggplot2)
+
+# Create the plot
+plot_model(mod_final,
+           transform = NULL,        # Keeps estimates on the log-link scale (standardized)
+           show.values = TRUE,      # Shows the estimate value on the plot
+           value.offset = .3,       # Offsets the text slightly
+           vline.color = "red",     # Adds a red line at 0 (null effect)
+           title = "Drivers of Seedling Recruitment (Negative Binomial GLM)",
+           axis.labels = c("Subplot Basal Area", "Soil pH", "Windwardness",
+                           "Rel. Total Light", "Distinctiveness (Di)", "SLA CV"),
+           width = 0.2) +           # Adjusts thickness of the error bars
+   theme_minimal() +
+   labs(y = "Standardized Coefficients (Log-scale)")
 
 #####SEM part
 #4. # and we expected that species distinctiveness and trait variation are mediating factors
